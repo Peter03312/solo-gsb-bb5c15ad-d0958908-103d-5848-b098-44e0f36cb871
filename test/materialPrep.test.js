@@ -254,3 +254,48 @@ test('非法损耗率字面值仍返回明确错误（科学计数法 / Infinity
     );
   }
 });
+
+test('前端百分数换算回归：0.9% 经文本精确换算后两帖各 1000 张、采购 2 包', () => {
+  // 页面输入 0.9%、16 页、每帖上限 2 张（2 帖各 2 张）、495 份、每帖开机损耗 1 张、每包 1000 张。
+  // 旧前端 Number('0.9')/100 = 0.009000000000000001，服务端按字面值解析后比 9/1000 略大，
+  // ceil(991 / (1 − r)) 由 1000 错取 1001，两帖合计 2002、采购 3 包。
+  // 修复后前端按十进制文本换算上送字符串 '0.009'（见 public/percentRate.js），
+  // 每帖 ceil(991 / (1 − 9/1000)) = ceil(991 × 1000 / 991) = 1000，合计 2000、采购 2 包。
+  const prep = { copies: 495, makereadySheets: 1, processWasteRate: '0.009', sheetsPerPack: 1000 };
+  const r = computeImposition({ ...BASE, materialPrep: prep });
+  const mp = r.materialPrep;
+  assert.deepEqual(mp.signatures.map((x) => x.actualSheetCount), [2, 2]);
+  mp.signatures.forEach((row) => {
+    assert.equal(row.netSheets, 990);
+    assert.equal(row.makereadySheets, 1);
+    assert.equal(row.requiredSheets, 1000);
+    assert.equal(row.processWaste, 9); // 1000 − 990 − 1
+    assert.equal(row.totalWaste, 10);
+  });
+  const t = mp.totals;
+  assert.equal(t.netSheets, 1980);
+  assert.equal(t.makereadySheets, 2);
+  assert.equal(t.processWaste, 18);
+  assert.equal(t.requiredSheets, 2000);
+  assert.equal(t.purchasePacks, 2);
+  assert.equal(t.purchaseSheets, 2000);
+  assert.equal(t.packRemainder, 0);
+  // 回显仍为 JS number，供页面格式化百分数展示
+  assert.equal(mp.processWasteRate, 0.009);
+});
+
+test('直调 API 的原有损耗率输入仍可用：数字 0.009 与字符串 "0.009" 结果一致', () => {
+  const make = (rate) => computeImposition({
+    ...BASE,
+    materialPrep: { copies: 495, makereadySheets: 1, processWasteRate: rate, sheetsPerPack: 1000 },
+  }).materialPrep;
+  const byString = make('0.009');
+  const byNumber = make(0.009); // 0.009 的最短往返字面值即 "0.009"，与字符串等价
+  assert.equal(byNumber.totals.requiredSheets, 2000);
+  assert.equal(byNumber.totals.purchasePacks, 2);
+  assert.deepEqual(
+    byNumber.signatures.map((x) => x.requiredSheets),
+    byString.signatures.map((x) => x.requiredSheets)
+  );
+  assert.deepEqual(byNumber.totals, byString.totals);
+});

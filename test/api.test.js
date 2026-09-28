@@ -389,6 +389,43 @@ test('印刷备料：极小损耗率 1e-10 按十进制精确取整（科学计�
   }
 });
 
+test('印刷备料：前端按百分数文本精确换算上送（0.9% → "0.009"），逐帖 / 汇总 / 采购量正确', async () => {
+  const srv = await startServer();
+  try {
+    // 与印刷备料页面相同的场景：16 页、每帖上限 2 张（2 帖各 2 张）、495 份、
+    // 每帖开机损耗 1 张、每包 1000 张；输入框填 0.9（%）。
+    const input = { totalPages: 16, sheetsPerSignature: 2, binding: 'left', flip: 'short' };
+    // 旧前端传 0.9/100 的浮点结果（0.009000000000000001）会得到各帖 1001 张、3 包；
+    // 修复后按文本精确换算上送字符串。
+    const res = await postJson(`${srv.baseUrl}/api/impose`, {
+      ...input,
+      materialPrep: { copies: 495, makereadySheets: 1, processWasteRate: '0.009', sheetsPerPack: 1000 },
+    });
+    assert.equal(res.status, 200);
+    const mp = res.body.materialPrep;
+    assert.equal(mp.signatures.length, 2);
+    assert.deepEqual(mp.signatures.map((x) => x.requiredSheets), [1000, 1000]);
+    assert.equal(mp.totals.requiredSheets, 2000);
+    assert.equal(mp.totals.purchasePacks, 2);
+    assert.equal(mp.totals.purchaseSheets, 2000);
+    assert.equal(mp.totals.packRemainder, 0);
+
+    // 直调 API 的原有数字损耗率输入仍可用且结果一致
+    const direct = await postJson(`${srv.baseUrl}/api/impose`, {
+      ...input,
+      materialPrep: { copies: 495, makereadySheets: 1, processWasteRate: 0.009, sheetsPerPack: 1000 },
+    });
+    assert.equal(direct.status, 200);
+    assert.deepEqual(
+      direct.body.materialPrep.signatures.map((x) => x.requiredSheets),
+      [1000, 1000]
+    );
+    assert.equal(direct.body.materialPrep.totals.purchasePacks, 2);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('印刷备料：需领纸超出安全整数时返回明确 400，不输出失真数量', async () => {
   const srv = await startServer();
   try {
