@@ -349,6 +349,24 @@ function parseChapterStarts(raw) {
 }
 
 /**
+ * 把过程损耗率百分数文本精确换算为小数率文本（"0.9" -> "0.009"、"3" -> "0.03"、
+ * "99.999" -> "0.99999"）：仅允许 0 ~ 99.999、最多三位小数，全程字符串 / 整数运算，
+ * 不经过浮点——Number('0.9') / 100 在浮点下为 0.009000000000000001，服务端按
+ * 十进制字面值精确计算时会把该尾差当作真实损耗率，逐帖 ceil 多取纸、整包采购随之多算。
+ * 非法时返回 null（由调用方给出可读提示）。
+ */
+function percentToRateText(raw) {
+  const s = String(raw).trim();
+  if (!/^\d{1,2}(\.\d{1,3})?$/.test(s)) return null;
+  const dot = s.indexOf('.');
+  const intPart = dot < 0 ? s : s.slice(0, dot);
+  const fracPart = (dot < 0 ? '' : s.slice(dot + 1)).padEnd(3, '0');
+  // 百分数 × 1000 的整数字符串；小数率 = 该整数 / 100000（小数点再左移 5 位）
+  const scaled = (intPart + fracPart).padStart(5, '0');
+  return `0.${scaled}`.replace(/0+$/, '').replace(/\.$/, '') || '0';
+}
+
+/**
  * 解析 B 版改动页码输入：支持单页与区间（如 "3, 5-8, 12"）。
  * 区间 token（连字符两侧可有空格，如 "5 - 8"）整体原样上送；其余按逗号 / 空白拆分，
  * 数字转整数、无法解析的 token 原样上送，完整校验（范围 / 去重 / 区间方向）由服务端执行。
@@ -425,15 +443,21 @@ form.addEventListener('submit', async (event) => {
       markSizeMm: productionMarksBox.checked && markSizeInput.value.trim() !== ''
         ? Number(markSizeInput.value)
         : undefined,
-      // 印刷备料：仅勾选时上送；过程损耗率百分数换算为小数（3% -> 0.03）
-      materialPrep: materialPrepBox.checked
-        ? {
-            copies: Number(prepCopiesInput.value),
-            makereadySheets: Number(prepMakereadyInput.value),
-            processWasteRate: Number(prepWasteRateInput.value) / 100,
-            sheetsPerPack: Number(prepSheetsPerPackInput.value),
-          }
-        : undefined,
+      // 印刷备料：仅勾选时上送；过程损耗率按用户输入的十进制文本精确换算
+      // （0.9% -> "0.009"），不做浮点除法，交给服务端有理数计算。
+      materialPrep: (() => {
+        if (!materialPrepBox.checked) return undefined;
+        const wasteRateText = percentToRateText(prepWasteRateInput.value);
+        if (wasteRateText === null) {
+          throw new Error('过程损耗率必须为 0 ~ 99.999 的数字，最多三位小数（%）');
+        }
+        return {
+          copies: Number(prepCopiesInput.value),
+          makereadySheets: Number(prepMakereadyInput.value),
+          processWasteRate: wasteRateText,
+          sheetsPerPack: Number(prepSheetsPerPackInput.value),
+        };
+      })(),
       // 采购报价组合：仅勾选时上送；价格在收集阶段已精确换算为整数分。
       // demandSheets 未手工填写时不上送，由服务端回退到备料整包采购张数。
       purchaseQuotes: (() => {

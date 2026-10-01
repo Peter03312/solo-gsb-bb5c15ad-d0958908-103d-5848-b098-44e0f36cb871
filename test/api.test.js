@@ -389,6 +389,29 @@ test('印刷备料：极小损耗率 1e-10 按十进制精确取整（科学计�
   }
 });
 
+test('印刷备料：表单百分数精确换算（0.9% -> "0.009"）后逐帖 / 汇总 / 采购量一致', async () => {
+  const srv = await startServer();
+  try {
+    // 页面输入 0.9% 经前端十进制文本换算为 "0.009" 上送；16 页 2 帖各 2 张、
+    // 495 份、开机 1：每帖 991 / 0.991 = 1000 张恰整，采购 2 包（浮点除法上送会错为 1001 张 / 3 包）。
+    const prep = { copies: 495, makereadySheets: 1, processWasteRate: '0.009', sheetsPerPack: 1000 };
+    const res = await postJson(`${srv.baseUrl}/api/impose`, {
+      totalPages: 16, sheetsPerSignature: 2, binding: 'left', flip: 'short',
+      materialPrep: prep,
+    });
+    assert.equal(res.status, 200);
+    const mp = res.body.materialPrep;
+    assert.equal(mp.processWasteRate, 0.009);
+    assert.deepEqual(mp.signatures.map((x) => x.requiredSheets), [1000, 1000]);
+    assert.equal(mp.totals.requiredSheets, 2000);
+    assert.equal(mp.totals.purchasePacks, 2);
+    assert.equal(mp.totals.purchaseSheets, 2000);
+    assert.equal(mp.totals.packRemainder, 0);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('印刷备料：需领纸超出安全整数时返回明确 400，不输出失真数量', async () => {
   const srv = await startServer();
   try {

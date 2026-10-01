@@ -241,6 +241,62 @@ test('张数超出安全整数范围返回明确错误，不输出失真数量',
   );
 });
 
+test('百分数精确换算回归：0.9%、495 份、开机 1、每包 1000 时每帖恰领 1000 张、采购 2 包', () => {
+  // 页面输入 0.9% 经前端十进制文本精确换算为 "0.009" 上送（不做浮点除法）。
+  // 16 页、每帖 2 张 -> 2 帖各 2 张；每帖净用纸 2 × 495 = 990，+ 开机 1 = 991；
+  // 991 / (1 − 0.009) = 991 / 0.991 = 1000 恰好整除，须领 1000 张而非 1001 张。
+  const base = { totalPages: 16, sheetsPerSignature: 2, binding: 'left', flip: 'short' };
+  const prep = (rate) => ({ copies: 495, makereadySheets: 1, processWasteRate: rate, sheetsPerPack: 1000 });
+  for (const rate of ['0.009', 0.009]) { // 前端换算后的字符串与直调 API 的数字均可
+    const mp = computeImposition({ ...base, materialPrep: prep(rate) }).materialPrep;
+    assert.equal(mp.signatures.length, 2);
+    mp.signatures.forEach((row) => {
+      assert.equal(row.netSheets, 990);
+      assert.equal(row.makereadySheets, 1);
+      assert.equal(row.requiredSheets, 1000);
+      assert.equal(row.processWaste, 9); // 1000 - 990 - 1
+    });
+    const t = mp.totals;
+    assert.equal(t.requiredSheets, 2000);
+    assert.equal(t.purchasePacks, 2);
+    assert.equal(t.purchaseSheets, 2000);
+    assert.equal(t.packRemainder, 0);
+  }
+});
+
+test('浮点除法字面值会被当作真实损耗率：0.9/100 的尾差导致每帖多领 1 张、多采购 1 包', () => {
+  // Number('0.9') / 100 = 0.009000000000000001，服务端按十进制字面值精确计算，
+  // 991 / (1 − 0.009000000000000001) 略大于 1000，逐帖 ceil 为 1001 —— 前端必须
+  // 按用户输入文本精确换算（见上一条测试），禁止浮点除法上送。
+  const base = { totalPages: 16, sheetsPerSignature: 2, binding: 'left', flip: 'short' };
+  const prep = { copies: 495, makereadySheets: 1, processWasteRate: Number('0.9') / 100, sheetsPerPack: 1000 };
+  const mp = computeImposition({ ...base, materialPrep: prep }).materialPrep;
+  assert.deepEqual(mp.signatures.map((x) => x.requiredSheets), [1001, 1001]);
+  assert.equal(mp.totals.requiredSheets, 2002);
+  assert.equal(mp.totals.purchasePacks, 3);
+  assert.equal(mp.totals.purchaseSheets, 3000);
+});
+
+test('表单百分数边界：0% 与 99.999%（最多三位小数）换算后的字面值均精确计算', () => {
+  const base = { totalPages: 16, sheetsPerSignature: 2, binding: 'left', flip: 'short' };
+  // 0%：需领纸 = 净用纸 + 开机损耗
+  const zero = computeImposition({
+    ...base,
+    materialPrep: { copies: 495, makereadySheets: 1, processWasteRate: '0', sheetsPerPack: 1000 },
+  }).materialPrep;
+  assert.deepEqual(zero.signatures.map((x) => x.requiredSheets), [991, 991]);
+  assert.equal(zero.totals.requiredSheets, 1982);
+  assert.equal(zero.totals.purchasePacks, 2);
+  // 99.999%（"0.99999"）：良品率 1/100000，991 / (1 − 0.99999) = 99100000 恰好整除
+  const max = computeImposition({
+    ...base,
+    materialPrep: { copies: 495, makereadySheets: 1, processWasteRate: '0.99999', sheetsPerPack: 1000 },
+  }).materialPrep;
+  assert.deepEqual(max.signatures.map((x) => x.requiredSheets), [99100000, 99100000]);
+  assert.equal(max.totals.requiredSheets, 198200000);
+  assert.equal(max.totals.purchasePacks, 198200);
+});
+
 test('非法损耗率字面值仍返回明确错误（科学计数法 / Infinity / 空串）', () => {
   const base = { totalPages: 4, sheetsPerSignature: 1, binding: 'left', flip: 'short' };
   for (const rate of [1, '1', '1e0', NaN, Infinity, 'Infinity', '', '   ', '0xff', 'abc', 2e0]) {
